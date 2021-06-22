@@ -78,6 +78,7 @@ class YoutubeLiveChatFD(FragmentFD):
                 processed_fragment.extend(
                     json.dumps(pseudo_action, ensure_ascii=False).encode('utf-8') + b'\n')
             continuation_data_getters = [
+                lambda x: x['header']['liveChatHeaderRenderer']['viewSelector']['sortFilterSubMenuRenderer']['subMenuItems'][0]['continuation']['reloadContinuationData'],
                 lambda x: x['continuations'][0]['invalidationContinuationData'],
                 lambda x: x['continuations'][0]['timedContinuationData'],
             ]
@@ -95,14 +96,19 @@ class YoutubeLiveChatFD(FragmentFD):
         elif info_dict['protocol'] == 'youtube_live_chat':
             parse_actions = parse_actions_live
 
-        def download_and_parse_fragment(url, frag_index, request_data, headers):
+        def download_and_parse_fragment(url, frag_index, request_data=None, headers=None):
             count = 0
             while count <= fragment_retries:
                 try:
                     success, raw_fragment = dl_fragment(url, request_data, headers)
                     if not success:
                         return False, None, None
-                    data = json.loads(raw_fragment)
+                    try:
+                        data = ie._extract_yt_initial_data(video_id, raw_fragment.decode('utf-8', 'replace'))
+                    except RegexNotFoundError:
+                        data = None
+                    if not data:
+                        data = json.loads(raw_fragment)
                     live_chat_continuation = try_get(
                         data,
                         lambda x: x['continuationContents']['liveChatContinuation'], dict) or {}
@@ -142,8 +148,10 @@ class YoutubeLiveChatFD(FragmentFD):
         visitor_data = try_get(innertube_context, lambda x: x['client']['visitorData'], str)
         if info_dict['protocol'] == 'youtube_live_chat_replay':
             url = 'https://www.youtube.com/youtubei/v1/live_chat/get_live_chat_replay?key=' + api_key
+            chat_page_url = 'https://www.youtube.com/live_chat_replay?continuation=' + continuation_id
         elif info_dict['protocol'] == 'youtube_live_chat':
             url = 'https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key=' + api_key
+            chat_page_url = 'https://www.youtube.com/live_chat?continuation=' + continuation_id
 
         frag_index = offset = 0
         while continuation_id is not None:
@@ -154,11 +162,13 @@ class YoutubeLiveChatFD(FragmentFD):
             }
             if frag_index > 1:
                 request_data['currentPlayerState'] = {'playerOffsetMs': str(max(offset - 5000, 0))}
-            headers = ie._generate_api_headers(ytcfg, visitor_data=visitor_data)
-            headers.update({'content-type': 'application/json'})
-            fragment_request_data = json.dumps(request_data, ensure_ascii=False).encode('utf-8') + b'\n'
-            success, continuation_id, offset = download_and_parse_fragment(
-                url, frag_index, fragment_request_data, headers)
+                headers = ie._generate_api_headers(ytcfg, visitor_data=visitor_data)
+                headers.update({'content-type': 'application/json'})
+                fragment_request_data = json.dumps(request_data, ensure_ascii=False).encode('utf-8') + b'\n'
+                success, continuation_id, offset = download_and_parse_fragment(
+                    url, frag_index, fragment_request_data, headers)
+            else:
+                success, continuation_id, offset = download_and_parse_fragment(chat_page_url, frag_index)
             if not success:
                 return False
             if test:
